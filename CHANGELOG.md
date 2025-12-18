@@ -1,3 +1,9 @@
+# v0.6.7
+
+Released 2025-12-17
+
+- support for hass 2025.12+
+
 # v0.6.6
 
 Released 2025-05-26
