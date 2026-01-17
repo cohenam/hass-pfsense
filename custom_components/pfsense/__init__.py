@@ -6,7 +6,6 @@ import copy
 from datetime import timedelta
 import logging
 import math
-import re
 import time
 from typing import Callable
 
@@ -54,7 +53,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def dict_get(data: dict, path: str, default=None):
-    pathList = re.split(r"\.", path, flags=re.IGNORECASE)
+    pathList = path.split(".")
     result = data
     for key in pathList:
         try:
@@ -307,12 +306,26 @@ class PfSenseData:
         try:
             current_time = time.time()
 
-            # copy the old data to have around
-            previous_state = copy.deepcopy(self._state)
-            if "previous_state" in previous_state.keys():
-                del previous_state["previous_state"]
-
-            # ensure clean state each interval
+            # Selective copy: only copy data needed for delta calculations
+            # instead of deep copying the entire state (which can be 1-10MB)
+            previous_state = {
+                "update_time": self._state.get("update_time"),
+            }
+            # Copy telemetry data needed for rate calculations
+            if "telemetry" in self._state:
+                telemetry = self._state["telemetry"]
+                previous_state["telemetry"] = {}
+                # CPU ticks for usage calculation
+                if "cpu" in telemetry:
+                    previous_state["telemetry"]["cpu"] = copy.deepcopy(telemetry["cpu"])
+                # Interface counters for rate calculations
+                if "interfaces" in telemetry:
+                    previous_state["telemetry"]["interfaces"] = copy.deepcopy(telemetry["interfaces"])
+                # OpenVPN server bytes for rate calculations
+                if "openvpn" in telemetry and "servers" in telemetry["openvpn"]:
+                    previous_state["telemetry"]["openvpn"] = {
+                        "servers": copy.deepcopy(telemetry["openvpn"]["servers"])
+                    }
 
             new_state["update_time"] = current_time
             new_state["previous_state"] = previous_state
@@ -323,6 +336,12 @@ class PfSenseData:
             if "scope" in opts.keys() and opts["scope"] == "device_tracker":
                 try:
                     new_state["arp_table"] = self._get_arp_table()
+                    # Build MAC→entry index for O(1) lookups in device tracker
+                    new_state["arp_table_by_mac"] = {
+                        entry.get("mac-address", "").lower(): entry
+                        for entry in new_state["arp_table"]
+                        if entry.get("mac-address")
+                    }
                 except BaseException as err:
                     message = f"failed to retrieve arp table {err=}, {type(err)=}"
                     _LOGGER.error(message)
@@ -453,27 +472,6 @@ class PfSenseData:
                             new_property = f"{property}_{label}"
                             interface[new_property] = int(round(value, 0))
 
-                            continue
-
-                            # TODO: this logic is not perfect but probably 'good enough'
-                            # to make this perfect the stats should probably be their own
-                            # coordinator
-                            #
-                            # put this here to prevent over-agressive calculations when
-                            # data is refreshed due to switches being triggered etc
-                            #
-                            # theoretically if switches are going on/off rapidly the value
-                            # would never get updated as the code currently is
-                            if elapsed_time >= scan_interval:
-                                interface[new_property] = int(round(value, 0))
-                            else:
-                                previous_value = dict_get(
-                                    previous_interface, new_property
-                                )
-                                if previous_value is None:
-                                    previous_value = value
-                                interface[new_property] = int(round(previous_value, 0))
-
                     for server_name in dict_get(
                         new_state, "telemetry.openvpn.servers", {}
                     ).keys():
@@ -553,9 +551,52 @@ class CoordinatorEntityManager:
         )
         self.entity_unique_ids = set()
         self.entities = {}
+        self._last_schema_signature = None
+
+    def _get_schema_signature(self, state):
+        """Generate a signature of the data schema to detect when entities need refresh.
+
+        Only recreate entities when the schema changes (new interfaces, gateways, etc.),
+        not on every data update. This prevents creating 100-300+ temporary objects
+        per update cycle.
+        """
+        if state is None:
+            return None
+        signature = []
+        # Count interfaces
+        interfaces = dict_get(state, "telemetry.interfaces", {})
+        signature.append(("interfaces", tuple(sorted(interfaces.keys()))))
+        # Count gateways
+        gateways = dict_get(state, "telemetry.gateways", {})
+        signature.append(("gateways", tuple(sorted(gateways.keys()))))
+        # Count filesystems
+        filesystems = dict_get(state, "telemetry.filesystems", [])
+        fs_devices = tuple(sorted(fs.get("device", "") for fs in filesystems))
+        signature.append(("filesystems", fs_devices))
+        # Count CARP interfaces
+        carp_interfaces = state.get("carp_interfaces", [])
+        carp_ids = tuple(sorted(iface.get("uniqid", "") for iface in carp_interfaces))
+        signature.append(("carp", carp_ids))
+        # Count OpenVPN servers
+        openvpn_servers = dict_get(state, "telemetry.openvpn.servers", {})
+        signature.append(("openvpn", tuple(sorted(openvpn_servers.keys()))))
+        # Count ARP entries (for device tracker)
+        arp_table = state.get("arp_table", [])
+        signature.append(("arp_count", len(arp_table)))
+        return tuple(signature)
 
     @callback
     def process_entities(self):
+        state = self.coordinator.data
+        schema_signature = self._get_schema_signature(state)
+
+        # Skip entity recreation if schema hasn't changed and we have entities
+        if (self._last_schema_signature is not None
+            and schema_signature == self._last_schema_signature
+            and len(self.entity_unique_ids) > 0):
+            return
+
+        self._last_schema_signature = schema_signature
         entities = self.process_entities_callback(self.hass, self.config_entry)
         i_entity_unqiue_ids = set()
         for entity in entities:
@@ -567,20 +608,9 @@ class CoordinatorEntityManager:
                 self.async_add_entities([entity])
                 self.entity_unique_ids.add(unique_id)
                 self.entities[unique_id] = entity
-                # print(f"{unique_id} registered")
-            else:
-                # print(f"{unique_id} already registered")
-                pass
+            # Entities already registered are skipped
 
-        # check for missing entities
-        for entity_unique_id in self.entity_unique_ids:
-            if entity_unique_id not in i_entity_unqiue_ids:
-                pass
-                # print("should remove entity: " + str(self.entities[entity_unique_id].entry_id))
-                # print("candidate to remove entity: " + str(entity_unique_id))
-                # self.async_remove_entity(self.entities[entity_unique_id])
-                # self.entity_unique_ids.remove(entity_unique_id)
-                # del self.entities[entity_unique_id]
+        # Note: entity removal is currently disabled in the original code
 
     async def async_remove_entity(self, entity):
         registry = await async_get(self.hass)

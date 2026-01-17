@@ -172,13 +172,17 @@ class PfSenseScannerEntity(PfSenseEntity, ScannerEntity):
 
     def _get_pfsense_arp_entry(self) -> dict[str, str]:
         state = self.coordinator.data
+        # Use MAC index for O(1) lookup if available
+        arp_table_by_mac = dict_get(state, "arp_table_by_mac")
+        if arp_table_by_mac is not None:
+            return arp_table_by_mac.get(self._mac_address)
+        # Fallback to linear search if index not available
         arp_table = dict_get(state, "arp_table")
         if arp_table is None:
             return None
         for entry in arp_table:
             if entry.get("mac-address", "").lower() == self._mac_address:
                 return entry
-
         return None
 
     @property

@@ -5,7 +5,6 @@ likely via some sort of mutex.
 
 import json
 import logging
-import re
 import socket
 import ssl
 from urllib.parse import quote_plus, urlparse
@@ -19,7 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def dict_get(data: dict, path: str, default=None):
-    pathList = re.split(r"\.", path, flags=re.IGNORECASE)
+    pathList = path.split(".")
     result = data
     for key in pathList:
         try:
@@ -549,7 +548,7 @@ $toreturn = [
     @_log_errors
     def get_services(self):
         # function get_services()
-        # ["",{"name":"nut","rcfile":"nut.sh","executable":"upsmon","description":"UPS monitoring daemon"},{"name":"iperf","executable":"iperf3","description":"iperf Network Performance Testing Daemon/Client","stopcmd":"mwexec(\"/usr/bin/killall iperf3\");"},{"name":"telegraf","rcfile":"telegraf.sh","executable":"telegraf","description":"Telegraf daemon"},{"name":"vnstatd","rcfile":"vnstatd.sh","executable":"vnstatd","description":"Status Traffic Totals data collection daemon"},{"name":"wireguard","rcfile":"wireguardd","executable":"php_wg","description":"WireGuard"},{"name":"FRR zebra","rcfile":"frr.sh","executable":"zebra","description":"FRR core/abstraction daemon"},{"name":"FRR staticd","rcfile":"frr.sh","executable":"staticd","description":"FRR static route daemon"},{"name":"FRR bfdd","rcfile":"frr.sh","executable":"bfdd","description":"FRR BFD daemon"},{"name":"FRR bgpd","rcfile":"frr.sh","executable":"bgpd","description":"FRR BGP routing daemon"},{"name":"FRR ospfd","rcfile":"frr.sh","executable":"ospfd","description":"FRR OSPF routing daemon"},{"name":"FRR ospf6d","rcfile":"frr.sh","executable":"ospf6d","description":"FRR OSPF6 routing daemon"},{"name":"FRR watchfrr","rcfile":"frr.sh","executable":"watchfrr","description":"FRR watchfrr watchdog daemon"},{"name":"haproxy","rcfile":"haproxy.sh","executable":"haproxy","description":"TCP/HTTP(S) Load Balancer"},{"name":"unbound","description":"DNS Resolver","enabled":true,"status":true},{"name":"pcscd","description":"PC/SC Smart Card Daemon","enabled":true,"status":true},{"name":"ntpd","description":"NTP clock sync","enabled":true,"status":true},{"name":"syslogd","description":"System Logger Daemon","enabled":true,"status":true},{"name":"dhcpd","description":"DHCP Service","enabled":true,"status":true},{"name":"dpinger","description":"Gateway Monitoring Daemon","enabled":true,"status":true},{"name":"miniupnpd","description":"UPnP Service","enabled":true,"status":true},{"name":"ipsec","description":"IPsec VPN","enabled":true,"status":true},{"name":"sshd","description":"Secure Shell Daemon","enabled":true,"status":true},{"name":"openvpn","mode":"server","id":0,"vpnid":"1","description":"OpenVPN server: primary vpn","enabled":true,"status":true}]
+        # Batch all service status checks in a single PHP call to avoid N+1 API calls
         script = """
 // release the mutex immediately so other api calls can go through
 // as this one can take a minute
@@ -566,6 +565,25 @@ foreach($s as $service) {
       continue;
   }
   if (!empty($service)) {
+    // Add status check for services that don't have it
+    // This avoids extra API calls from the Python side
+    if (!isset($service['status'])) {
+      $service_name = $service['name'];
+      if ($service_name == 'openvpn' && isset($service['vpnid'])) {
+        // OpenVPN requires special handling
+        $svc = $service;
+        if (!isset($svc['vpnmode']) && isset($svc['mode'])) {
+          $svc['vpnmode'] = $svc['mode'];
+        }
+        if (!isset($svc['mode']) && isset($svc['vpnmode'])) {
+          $svc['mode'] = $svc['vpnmode'];
+        }
+        $svc['id'] = $svc['vpnid'];
+        $service['status'] = (bool) get_service_status($svc);
+      } else {
+        $service['status'] = (bool) is_service_running($service_name);
+      }
+    }
     $services[] = $service;
   }
 }
@@ -576,13 +594,6 @@ $toreturn = [
 ];
 """
         response = self._exec_php(script)
-
-        for service in response["data"]:
-            if "status" not in service:
-                service["status"] = self.get_service_is_running(
-                    service["name"], service
-                )
-
         return response["data"]
 
     @_log_errors
