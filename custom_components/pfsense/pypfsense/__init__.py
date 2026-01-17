@@ -1229,7 +1229,7 @@ global $config;
 global $g;
 
 function stripalpha($s) {
-  return preg_replace("/\D/", "", $s);
+  return preg_replace("/\\D/", "", $s);
 }
 
 $mbuf = null;
