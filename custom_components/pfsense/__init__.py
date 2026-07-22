@@ -583,6 +583,24 @@ class CoordinatorEntityManager:
         # Count ARP entries (for device tracker)
         arp_table = state.get("arp_table", [])
         signature.append(("arp_count", len(arp_table)))
+
+        # Filter/NAT rules and services also produce switch entities (switch.py) —
+        # track their identifiers so ones added after setup appear without a restart.
+        def rule_ids(rules, getter):
+            if not isinstance(rules, list):
+                return ()
+            return tuple(sorted(getter(rule) or "" for rule in rules if isinstance(rule, dict)))
+
+        signature.append(("filter_rules", rule_ids(
+            dict_get(state, "config.filter.rule"), lambda rule: rule.get("tracker"))))
+        signature.append(("nat_rules", rule_ids(
+            dict_get(state, "config.nat.rule"), lambda rule: dict_get(rule, "created.time"))))
+        signature.append(("nat_outbound", rule_ids(
+            dict_get(state, "config.nat.outbound.rule"), lambda rule: dict_get(rule, "created.time"))))
+        signature.append(("services", rule_ids(
+            state.get("services", []),
+            lambda service: service.get("name", "") + "-" + service.get("vpnid", "")
+            if service.get("name") == "openvpn" else service.get("name"))))
         return tuple(signature)
 
     @callback
