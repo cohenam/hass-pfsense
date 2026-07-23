@@ -1,6 +1,7 @@
 """Config flow for pfSense integration."""
 
 import logging
+from typing import Any
 from urllib.parse import quote_plus, urlparse
 import xmlrpc
 
@@ -14,15 +15,18 @@ from homeassistant.const import (
     CONF_VERIFY_SSL,
 )
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import AbortFlow
 import homeassistant.helpers.config_validation as cv
 from homeassistant.util import slugify
 import voluptuous as vol
 
 from .const import (
+    CONF_ALLOW_UNSAFE_SERVICES,
     CONF_DEVICE_TRACKER_CONSIDER_HOME,
     CONF_DEVICE_TRACKER_ENABLED,
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
     CONF_DEVICES,
+    DEFAULT_ALLOW_UNSAFE_SERVICES,
     DEFAULT_DEVICE_TRACKER_CONSIDER_HOME,
     DEFAULT_DEVICE_TRACKER_ENABLED,
     DEFAULT_DEVICE_TRACKER_SCAN_INTERVAL,
@@ -31,17 +35,35 @@ from .const import (
     DEFAULT_VERIFY_SSL,
     DOMAIN,
 )
-from .pypfsense import Client
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def cleanse_sensitive_data(message, secrets=[]):
-    for secret in secrets:
-        if secret is not None:
+def cleanse_sensitive_data(message: str, secrets: list[str] | None = None) -> str:
+    for secret in secrets or []:
+        if secret:
             message = message.replace(secret, "[redacted]")
             message = message.replace(quote_plus(secret), "[redacted]")
     return message
+
+
+def _create_client(url: str, username: str, password: str, verify_ssl: bool):
+    # These helpers run in the executor so importing the client cannot block HA.
+    from .pypfsense import Client
+
+    return Client(url, username, password, {"verify_ssl": verify_ssl})
+
+
+def _get_system_info(
+    url: str, username: str, password: str, verify_ssl: bool
+) -> dict[str, Any]:
+    return _create_client(url, username, password, verify_ssl).get_system_info()
+
+
+def _get_arp_table(
+    url: str, username: str, password: str, verify_ssl: bool
+) -> list[dict[str, Any]]:
+    return _create_client(url, username, password, verify_ssl).get_arp_table(True)
 
 
 class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
@@ -56,6 +78,8 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the initial step."""
         errors = {}
         if user_input is not None:
+            username = user_input.get(CONF_USERNAME, DEFAULT_USERNAME)
+            password = user_input.get(CONF_PASSWORD, "")
             try:
                 name = user_input.get(CONF_NAME, False) or None
 
@@ -63,22 +87,30 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 # ParseResult(
                 #     scheme='', netloc='', path='f', params='', query='', fragment=''
                 # )
-                url_parts = urlparse(url)
-                if len(url_parts.scheme) < 1:
+                try:
+                    url_parts = urlparse(url)
+                except ValueError as err:
+                    raise InvalidURL() from err
+                if url_parts.scheme not in {"http", "https"}:
                     raise InvalidURL()
 
-                if len(url_parts.netloc) < 1:
+                try:
+                    hostname = url_parts.hostname
+                except ValueError as err:
+                    raise InvalidURL() from err
+                if (
+                    not hostname
+                    or url_parts.username is not None
+                    or url_parts.password is not None
+                ):
                     raise InvalidURL()
 
                 # remove any path etc details
                 url = f"{url_parts.scheme}://{url_parts.netloc}"
-                username = user_input.get(CONF_USERNAME, DEFAULT_USERNAME)
-                password = user_input[CONF_PASSWORD]
                 verify_ssl = user_input.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)
 
-                client = Client(url, username, password, {"verify_ssl": verify_ssl})
                 system_info = await self.hass.async_add_executor_job(
-                    client.get_system_info
+                    _get_system_info, url, username, password, verify_ssl
                 )
 
                 if name is None:
@@ -147,7 +179,9 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                     _LOGGER.error(message)
                     errors["base"] = "unknown"
-            except BaseException as err:
+            except AbortFlow:
+                raise
+            except Exception as err:
                 message = cleanse_sensitive_data(
                     f"Unexpected {err=}, {type(err)=}", [username, password]
                 )
@@ -192,16 +226,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self) -> None:
         """Initialize options flow."""
-        self.new_options = None
+        self.new_options: dict[str, Any] = {}
 
     async def async_step_init(self, user_input=None):
         """Handle options flow."""
         if user_input is not None:
             if user_input.get(CONF_DEVICE_TRACKER_ENABLED):
-                self.new_options = user_input
+                self.new_options = dict(user_input)
                 return await self.async_step_device_tracker()
-            else:
-                return self.async_create_entry(title="", data=user_input)
+            return self.async_create_entry(title="", data=user_input)
 
         scan_interval = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
@@ -215,6 +248,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         device_tracker_consider_home = self.config_entry.options.get(
             CONF_DEVICE_TRACKER_CONSIDER_HOME, DEFAULT_DEVICE_TRACKER_CONSIDER_HOME
+        )
+        allow_unsafe_services = self.config_entry.options.get(
+            CONF_ALLOW_UNSAFE_SERVICES, DEFAULT_ALLOW_UNSAFE_SERVICES
         )
 
         base_schema = {
@@ -230,55 +266,62 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             vol.Optional(
                 CONF_DEVICE_TRACKER_CONSIDER_HOME, default=device_tracker_consider_home
             ): vol.All(vol.Coerce(int), vol.Clamp(min=0, max=600)),
+            vol.Optional(
+                CONF_ALLOW_UNSAFE_SERVICES, default=allow_unsafe_services
+            ): bool,
         }
 
         return self.async_show_form(step_id="init", data_schema=vol.Schema(base_schema))
 
     async def async_step_device_tracker(self, user_input=None):
         """Handle device tracker list step."""
+        if user_input is not None:
+            self.new_options[CONF_DEVICES] = user_input[CONF_DEVICES]
+            return self.async_create_entry(title="", data=self.new_options)
+
         url = self.config_entry.data[CONF_URL].strip()
         username = self.config_entry.data.get(CONF_USERNAME, DEFAULT_USERNAME)
         password = self.config_entry.data[CONF_PASSWORD]
         verify_ssl = self.config_entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)
-        client = Client(url, username, password, {"verify_ssl": verify_ssl})
-        if user_input is None and (
-            arp_table := await self.hass.async_add_executor_job(
-                client.get_arp_table, True
+        errors = {}
+        try:
+            arp_table = await self.hass.async_add_executor_job(
+                _get_arp_table, url, username, password, verify_ssl
             )
-        ):
-            selected_devices = self.config_entry.options.get(CONF_DEVICES, [])
-
-            # dicts are ordered so put all previously selected items at the top
-            entries = {}
-            for device in selected_devices:
-                entries[device] = device
-
-            # follow with all arp table entries
-            for entry in arp_table:
-                mac = entry.get("mac-address", "").lower()
-                if len(mac) < 1:
-                    continue
-
-                hostname = entry.get("hostname").strip("?")
-                ip = entry.get("ip-address")
-
-                label = f"{mac} - {hostname.strip()} ({ip.strip()})"
-                entries[mac] = label
-
-            return self.async_show_form(
-                step_id="device_tracker",
-                data_schema=vol.Schema(
-                    {
-                        vol.Optional(
-                            CONF_DEVICES, default=selected_devices
-                        ): cv.multi_select(entries),
-                    }
-                ),
+        except Exception as err:
+            message = cleanse_sensitive_data(
+                f"Unable to load ARP table: {err=}, {type(err)=}",
+                [username, password],
             )
-        if user_input:
-            self.new_options[CONF_DEVICES] = user_input[CONF_DEVICES]
-        return self.async_create_entry(title="", data=self.new_options)
+            _LOGGER.error(message)
+            errors["base"] = "cannot_connect"
+            arp_table = []
+
+        selected_devices = self.config_entry.options.get(CONF_DEVICES, [])
+
+        # Preserve previously selected devices when they are temporarily absent.
+        entries = {device: device for device in selected_devices}
+        for entry in arp_table:
+            mac = entry.get("mac-address", "").lower()
+            if not mac:
+                continue
+
+            hostname = (entry.get("hostname") or "").strip("? ")
+            ip = (entry.get("ip-address") or "").strip()
+            entries[mac] = f"{mac} - {hostname or 'unknown'} ({ip})"
+
+        return self.async_show_form(
+            step_id="device_tracker",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_DEVICES, default=selected_devices
+                    ): cv.multi_select(entries),
+                }
+            ),
+            errors=errors,
+        )
 
 
 class InvalidURL(Exception):
-    """InavlidURL."""
+    """Invalid URL."""

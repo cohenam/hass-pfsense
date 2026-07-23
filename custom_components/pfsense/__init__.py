@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from datetime import timedelta
 import logging
 import math
-import re
 import time
 from typing import Callable
 
-import async_timeout
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_PASSWORD,
@@ -21,7 +20,6 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity_registry import async_get
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -43,24 +41,26 @@ from .const import (
     DOMAIN,
     LOADED_PLATFORMS,
     PFSENSE_CLIENT,
+    PFSENSE_DATA,
     PLATFORMS,
     SHOULD_RELOAD,
-    UNDO_UPDATE_LISTENER,
 )
 from .pypfsense import Client as pfSenseClient
 from .services import ServiceRegistrar
 
 _LOGGER = logging.getLogger(__name__)
+FIRMWARE_REFRESH_INTERVAL = timedelta(hours=2).total_seconds()
+SLOW_REFRESH_INTERVAL = timedelta(minutes=5).total_seconds()
 
 
 def dict_get(data: dict, path: str, default=None):
-    pathList = re.split(r"\.", path, flags=re.IGNORECASE)
+    path_list = path.split(".")
     result = data
-    for key in pathList:
+    for key in path_list:
         try:
             key = int(key) if key.isnumeric() else key
             result = result[key]
-        except:
+        except (IndexError, KeyError, TypeError):
             result = default
             break
 
@@ -90,16 +90,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     client = pfSenseClient(url, username, password, {"verify_ssl": verify_ssl})
     data = PfSenseData(client, entry, hass)
     scan_interval = options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    refresh_lock = asyncio.Lock()
 
     async def async_update_data():
         """Fetch data from pfSense."""
-        async with async_timeout.timeout(scan_interval - 1):
-            await hass.async_add_executor_job(lambda: data.update())
+        try:
+            async with refresh_lock:
+                await hass.async_add_executor_job(data.update)
+        except Exception as err:
+            raise UpdateFailed(f"Error fetching {entry.title} pfSense state") from err
 
-            if not data.state:
-                raise UpdateFailed(f"Error fetching {entry.title} pfSense state")
+        if not data.state:
+            raise UpdateFailed(f"Error fetching {entry.title} pfSense state")
 
-            return data.state
+        data.async_schedule_firmware_refresh()
+        return data.state
 
     coordinator = DataUpdateCoordinator(
         hass,
@@ -121,15 +126,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         async def async_update_device_tracker_data():
             """Fetch data from pfSense."""
-            async with async_timeout.timeout(device_tracker_scan_interval - 1):
-                await hass.async_add_executor_job(
-                    lambda: device_tracker_data.update({"scope": "device_tracker"})
+            try:
+                async with refresh_lock:
+                    await hass.async_add_executor_job(
+                        device_tracker_data.update, {"scope": "device_tracker"}
+                    )
+            except Exception as err:
+                raise UpdateFailed(
+                    f"Error fetching {entry.title} pfSense device tracker state"
+                ) from err
+
+            if not device_tracker_data.state:
+                raise UpdateFailed(
+                    f"Error fetching {entry.title} pfSense device tracker state"
                 )
 
-                if not device_tracker_data.state:
-                    raise UpdateFailed(f"Error fetching {entry.title} pfSense state")
-
-                return device_tracker_data.state
+            return device_tracker_data.state
 
         device_tracker_coordinator = DataUpdateCoordinator(
             hass,
@@ -139,24 +151,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             update_interval=timedelta(seconds=device_tracker_scan_interval),
         )
 
-    undo_listener = entry.add_update_listener(_async_update_listener)
-
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         COORDINATOR: coordinator,
         DEVICE_TRACKER_COORDINATOR: device_tracker_coordinator,
         PFSENSE_CLIENT: client,
-        UNDO_UPDATE_LISTENER: [undo_listener],
+        PFSENSE_DATA: data,
         LOADED_PLATFORMS: platforms,
     }
 
-    # Fetch initial data so we have data when entities subscribe
-    await coordinator.async_config_entry_first_refresh()
-    if device_tracker_enabled:
+    try:
         # Fetch initial data so we have data when entities subscribe
-        await device_tracker_coordinator.async_config_entry_first_refresh()
+        await coordinator.async_config_entry_first_refresh()
+        # Fetch initial data so we have data when entities subscribe
+        if device_tracker_enabled:
+            await device_tracker_coordinator.async_config_entry_first_refresh()
 
-    await hass.config_entries.async_forward_entry_setups(entry, platforms)
+        await hass.config_entries.async_forward_entry_setups(entry, platforms)
+    except Exception:
+        data.async_cancel_background_tasks()
+        if device_tracker_enabled:
+            device_tracker_data.async_cancel_background_tasks()
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        raise
+
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    entry.async_on_unload(data.async_cancel_background_tasks)
+    if device_tracker_enabled:
+        entry.async_on_unload(device_tracker_data.async_cancel_background_tasks)
 
     service_registar = ServiceRegistrar(hass)
     service_registar.async_register()
@@ -168,9 +190,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     platforms = hass.data[DOMAIN][entry.entry_id][LOADED_PLATFORMS]
     unload_ok = await hass.config_entries.async_unload_platforms(entry, platforms)
-
-    for listener in hass.data[DOMAIN][entry.entry_id][UNDO_UPDATE_LISTENER]:
-        listener()
 
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
@@ -186,7 +205,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
     # 1 -> 2: tls_insecure to verify_ssl
     if version == 1:
-        version = config_entry.version = 2
+        version = 2
         tls_insecure = config_entry.data.get(CONF_TLS_INSECURE, DEFAULT_TLS_INSECURE)
         data = dict(config_entry.data)
 
@@ -201,6 +220,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         hass.config_entries.async_update_entry(
             config_entry,
             data=data,
+            version=version,
         )
 
         _LOGGER.info("Migration to version %s successful", version)
@@ -218,7 +238,12 @@ class PfSenseData:
         self._hass = hass
         self._state = {}
         self._firmware_update_info = None
-        self._background_tasks = set()
+        self._firmware_last_attempt_at = 0.0
+        self._firmware_task: asyncio.Task | None = None
+        self._background_tasks: set[asyncio.Task] = set()
+        self._cancelled = False
+        self._slow_state = {}
+        self._slow_state_updated_at = 0.0
 
     @property
     def state(self):
@@ -240,17 +265,53 @@ class PfSenseData:
     def _get_system_info(self):
         return self._client.get_system_info()
 
-    @_log_timing
-    def _refresh_firmware_update_info(self):
+    async def _async_refresh_firmware_update_info(self):
         try:
-            self._firmware_update_info = self._client.get_firmware_update_info()
-
-        except BaseException as err:
-            # can take some time to refresh data
-            # will catch it the next cycle likely
-            if "timed out" in str(err):
+            update_info = await self._hass.async_add_executor_job(
+                self._client.get_firmware_update_info
+            )
+        except Exception as err:
+            # pfSense refreshes its pkg-version cache (~2h TTL) by contacting
+            # upstream servers, so a timeout must not fail normal telemetry.
+            if isinstance(err, TimeoutError) or "timed out" in str(err):
+                _LOGGER.debug("Firmware update check timed out; retaining last result")
                 return
-            raise err
+            _LOGGER.warning("Firmware update check failed; retaining last result")
+            return
+
+        if not self._cancelled:
+            self._firmware_update_info = update_info
+
+    @callback
+    def async_schedule_firmware_refresh(self):
+        """Schedule one slow firmware refresh when its cache expires."""
+        if self._cancelled:
+            return
+        if self._firmware_task is not None and not self._firmware_task.done():
+            return
+        now = time.monotonic()
+        if (
+            self._firmware_last_attempt_at
+            and now - self._firmware_last_attempt_at < FIRMWARE_REFRESH_INTERVAL
+        ):
+            return
+
+        self._firmware_last_attempt_at = now
+        task = self._hass.async_create_task(
+            self._async_refresh_firmware_update_info(),
+            f"{DOMAIN}-{self._config_entry.entry_id}-firmware-refresh",
+        )
+        self._firmware_task = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    @callback
+    def async_cancel_background_tasks(self):
+        """Prevent background results from publishing after unload."""
+        self._cancelled = True
+        for task in self._background_tasks:
+            task.cancel()
+        self._background_tasks.clear()
 
     @_log_timing
     def _get_firmware_update_info(self):
@@ -269,10 +330,6 @@ class PfSenseData:
         return self._client.get_config()
 
     @_log_timing
-    def _get_interfaces(self):
-        return self._client.get_interfaces()
-
-    @_log_timing
     def _get_services(self):
         return self._client.get_services()
 
@@ -289,10 +346,6 @@ class PfSenseData:
         return self._client.get_dhcp_leases(False)
 
     @_log_timing
-    def _are_notices_pending(self):
-        return self._client.are_notices_pending()
-
-    @_log_timing
     def _get_notices(self):
         return self._client.get_notices()
 
@@ -300,53 +353,87 @@ class PfSenseData:
     def _get_arp_table(self):
         return self._client.get_arp_table(True)
 
-    def update(self, opts={}):
+    def _get_slow_state(self, include_firewall_config):
+        now = time.monotonic()
+        if (
+            self._slow_state
+            and now - self._slow_state_updated_at < SLOW_REFRESH_INTERVAL
+        ):
+            return self._slow_state
+
+        slow_state = {
+            "system_info": self._get_system_info(),
+            "host_firmware_version": self._get_host_firmware_version(),
+        }
+        if include_firewall_config:
+            slow_state.update(
+                {
+                    "config": self._get_config(),
+                    "services": self._get_services(),
+                    "carp_interfaces": self._get_carp_interfaces(),
+                }
+            )
+        self._slow_state = slow_state
+        self._slow_state_updated_at = now
+        return self._slow_state
+
+    def invalidate_slow_state(self):
+        """Refresh configuration metadata after a service mutation."""
+        self._slow_state = {}
+        self._slow_state_updated_at = 0.0
+
+    def update(self, opts=None):
         """Fetch the latest state from pfSense."""
+        opts = opts or {}
         new_state = {}
 
         try:
-            current_time = time.time()
+            is_device_tracker = opts.get("scope") == "device_tracker"
+            # Selective copy: only copy data needed for delta calculations
+            # instead of deep copying the entire state (which can be 1-10MB)
+            previous_state = {
+                "update_time": self._state.get("update_time"),
+            }
+            # Copy telemetry data needed for rate calculations
+            if "telemetry" in self._state:
+                telemetry = self._state["telemetry"]
+                previous_state["telemetry"] = {}
+                # CPU ticks for usage calculation
+                if "cpu" in telemetry:
+                    previous_state["telemetry"]["cpu"] = copy.deepcopy(telemetry["cpu"])
+                # Interface counters for rate calculations
+                if "interfaces" in telemetry:
+                    previous_state["telemetry"]["interfaces"] = copy.deepcopy(
+                        telemetry["interfaces"]
+                    )
+                # OpenVPN server bytes for rate calculations
+                if "openvpn" in telemetry and "servers" in telemetry["openvpn"]:
+                    previous_state["telemetry"]["openvpn"] = {
+                        "servers": copy.deepcopy(telemetry["openvpn"]["servers"])
+                    }
 
-            # copy the old data to have around
-            previous_state = copy.deepcopy(self._state)
-            if "previous_state" in previous_state.keys():
-                del previous_state["previous_state"]
+            new_state.update(self._get_slow_state(not is_device_tracker))
 
-            # ensure clean state each interval
-
-            new_state["update_time"] = current_time
-            new_state["previous_state"] = previous_state
-
-            new_state["system_info"] = self._get_system_info()
-            new_state["host_firmware_version"] = self._get_host_firmware_version()
-
-            if "scope" in opts.keys() and opts["scope"] == "device_tracker":
-                try:
-                    new_state["arp_table"] = self._get_arp_table()
-                except BaseException as err:
-                    message = f"failed to retrieve arp table {err=}, {type(err)=}"
-                    _LOGGER.error(message)
+            if is_device_tracker:
+                new_state["arp_table"] = self._get_arp_table()
+                new_state["arp_table_by_mac"] = {
+                    entry.get("mac-address", "").lower(): entry
+                    for entry in new_state["arp_table"]
+                    if entry.get("mac-address")
+                }
             else:
-                # queue up the firmaware task
-                # task = self._hass.loop.create_task(self._refresh_firmware_update_info())
-                # self._background_tasks.add(task)
-                # task.add_done_callback(self._background_tasks.discard)
-                self._hass.add_job(self._refresh_firmware_update_info)
-
                 new_state["firmware_update_info"] = self._get_firmware_update_info()
                 new_state["telemetry"] = self._get_telemetry()
-                new_state["config"] = self._get_config()
-                new_state["interfaces"] = self._get_interfaces()
-                new_state["services"] = self._get_services()
-                new_state["carp_interfaces"] = self._get_carp_interfaces()
+                new_state["update_time"] = time.monotonic()
+                new_state["previous_state"] = previous_state
                 new_state["carp_status"] = self._get_carp_status()
                 new_state["dhcp_leases"] = self._get_dhcp_leases()
                 new_state["dhcp_stats"] = {}
-                new_state["notices"] = {}
-                new_state["notices"][
-                    "pending_notices_present"
-                ] = self._are_notices_pending()
-                new_state["notices"]["pending_notices"] = self._get_notices()
+                pending_notices = self._get_notices()
+                new_state["notices"] = {
+                    "pending_notices_present": bool(pending_notices),
+                    "pending_notices": pending_notices,
+                }
 
                 lease_stats = {"total": 0, "online": 0, "idle_offline": 0}
                 for lease in new_state["dhcp_leases"]:
@@ -363,14 +450,13 @@ class PfSenseData:
                 new_state["dhcp_stats"]["leases"] = lease_stats
 
                 # calcule pps and kbps
-                scan_interval = self._config_entry.options.get(
-                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                )
                 update_time = dict_get(new_state, "update_time")
                 previous_update_time = dict_get(new_state, "previous_state.update_time")
 
                 if previous_update_time is not None:
                     elapsed_time = update_time - previous_update_time
+                    if elapsed_time <= 0:
+                        elapsed_time = 1
 
                     # calculate CPU Usage based on ticks
                     # /usr/local/www/widgets/widgets/system_information.widget.php
@@ -416,7 +502,7 @@ class PfSenseData:
                             f"previous_state.telemetry.interfaces.{interface_name}",
                         )
                         if previous_interface is None:
-                            break
+                            continue
 
                         for property in [
                             "inbytes",
@@ -435,7 +521,9 @@ class PfSenseData:
 
                             current_parent_value = interface[property]
                             previous_parent_value = previous_interface[property]
-                            change = abs(current_parent_value - previous_parent_value)
+                            change = current_parent_value - previous_parent_value
+                            if change < 0:
+                                continue
                             rate = change / elapsed_time
 
                             value = 0
@@ -452,27 +540,6 @@ class PfSenseData:
 
                             new_property = f"{property}_{label}"
                             interface[new_property] = int(round(value, 0))
-
-                            continue
-
-                            # TODO: this logic is not perfect but probably 'good enough'
-                            # to make this perfect the stats should probably be their own
-                            # coordinator
-                            #
-                            # put this here to prevent over-agressive calculations when
-                            # data is refreshed due to switches being triggered etc
-                            #
-                            # theoretically if switches are going on/off rapidly the value
-                            # would never get updated as the code currently is
-                            if elapsed_time >= scan_interval:
-                                interface[new_property] = int(round(value, 0))
-                            else:
-                                previous_value = dict_get(
-                                    previous_interface, new_property
-                                )
-                                if previous_value is None:
-                                    previous_value = value
-                                interface[new_property] = int(round(previous_value, 0))
 
                     for server_name in dict_get(
                         new_state, "telemetry.openvpn.servers", {}
@@ -509,7 +576,9 @@ class PfSenseData:
 
                             current_parent_value = server[property]
                             previous_parent_value = previous_server[property]
-                            change = abs(current_parent_value - previous_parent_value)
+                            change = current_parent_value - previous_parent_value
+                            if change < 0:
+                                continue
                             rate = change / elapsed_time
 
                             value = 0
@@ -526,10 +595,8 @@ class PfSenseData:
 
                             new_property = f"{property}_{label}"
                             server[new_property] = int(round(value, 0))
-        except BaseException as err:
-            # still replace current state as best we can
-            self._state = new_state
-            raise err
+        except Exception:
+            raise
 
         self._state = new_state
 
@@ -548,44 +615,125 @@ class CoordinatorEntityManager:
         self.config_entry = config_entry
         self.process_entities_callback = process_entities_callback
         self.async_add_entities = async_add_entities
-        hass.data[DOMAIN][config_entry.entry_id][UNDO_UPDATE_LISTENER].append(
+        config_entry.async_on_unload(
             coordinator.async_add_listener(self.process_entities)
         )
         self.entity_unique_ids = set()
         self.entities = {}
+        self._last_schema_signature = None
+
+    def _get_schema_signature(self, state):
+        """Generate a signature of the data schema to detect when entities need refresh.
+
+        Only recreate entities when the schema changes (new interfaces, gateways, etc.),
+        not on every data update. This prevents creating 100-300+ temporary objects
+        per update cycle.
+        """
+        if state is None:
+            return None
+        signature = []
+        # Count interfaces
+        interfaces = dict_get(state, "telemetry.interfaces", {})
+        signature.append(("interfaces", tuple(sorted(interfaces.keys()))))
+        # Count gateways
+        gateways = dict_get(state, "telemetry.gateways", {})
+        signature.append(("gateways", tuple(sorted(gateways.keys()))))
+        # Count filesystems
+        filesystems = dict_get(state, "telemetry.filesystems", [])
+        fs_devices = tuple(sorted(fs.get("device", "") for fs in filesystems))
+        signature.append(("filesystems", fs_devices))
+        # Count CARP interfaces
+        carp_interfaces = state.get("carp_interfaces", [])
+        carp_ids = tuple(sorted(iface.get("uniqid", "") for iface in carp_interfaces))
+        signature.append(("carp", carp_ids))
+        # Count OpenVPN servers
+        openvpn_servers = dict_get(state, "telemetry.openvpn.servers", {})
+        signature.append(("openvpn", tuple(sorted(openvpn_servers.keys()))))
+        # Count ARP entries (for device tracker)
+        arp_table = state.get("arp_table", [])
+        signature.append(("arp_count", len(arp_table)))
+
+        # Filter/NAT rules and services also produce switch entities (switch.py) —
+        # track their identifiers so ones added after setup appear without a restart.
+        def rule_ids(rules, getter):
+            if not isinstance(rules, list):
+                return ()
+            return tuple(
+                sorted(getter(rule) or "" for rule in rules if isinstance(rule, dict))
+            )
+
+        signature.append(
+            (
+                "filter_rules",
+                rule_ids(
+                    dict_get(state, "config.filter.rule"),
+                    lambda rule: rule.get("tracker"),
+                ),
+            )
+        )
+        signature.append(
+            (
+                "nat_rules",
+                rule_ids(
+                    dict_get(state, "config.nat.rule"),
+                    lambda rule: dict_get(rule, "created.time"),
+                ),
+            )
+        )
+        signature.append(
+            (
+                "nat_outbound",
+                rule_ids(
+                    dict_get(state, "config.nat.outbound.rule"),
+                    lambda rule: dict_get(rule, "created.time"),
+                ),
+            )
+        )
+        signature.append(
+            (
+                "services",
+                rule_ids(
+                    state.get("services", []),
+                    lambda service: (
+                        service.get("name", "") + "-" + service.get("vpnid", "")
+                        if service.get("name") == "openvpn"
+                        else service.get("name")
+                    ),
+                ),
+            )
+        )
+        return tuple(signature)
 
     @callback
     def process_entities(self):
+        state = self.coordinator.data
+        schema_signature = self._get_schema_signature(state)
+
+        # Skip entity recreation if schema hasn't changed and we have entities
+        if (
+            self._last_schema_signature is not None
+            and schema_signature == self._last_schema_signature
+            and len(self.entity_unique_ids) > 0
+        ):
+            return
+
+        self._last_schema_signature = schema_signature
         entities = self.process_entities_callback(self.hass, self.config_entry)
-        i_entity_unqiue_ids = set()
+        current_entity_unique_ids = set()
         for entity in entities:
             unique_id = entity.unique_id
             if unique_id is None:
                 raise Exception("unique_id is missing from entity")
-            i_entity_unqiue_ids.add(unique_id)
+            current_entity_unique_ids.add(unique_id)
             if unique_id not in self.entity_unique_ids:
                 self.async_add_entities([entity])
                 self.entity_unique_ids.add(unique_id)
                 self.entities[unique_id] = entity
-                # print(f"{unique_id} registered")
-            else:
-                # print(f"{unique_id} already registered")
-                pass
 
-        # check for missing entities
-        for entity_unique_id in self.entity_unique_ids:
-            if entity_unique_id not in i_entity_unqiue_ids:
-                pass
-                # print("should remove entity: " + str(self.entities[entity_unique_id].entry_id))
-                # print("candidate to remove entity: " + str(entity_unique_id))
-                # self.async_remove_entity(self.entities[entity_unique_id])
-                # self.entity_unique_ids.remove(entity_unique_id)
-                # del self.entities[entity_unique_id]
-
-    async def async_remove_entity(self, entity):
-        registry = await async_get(self.hass)
-        if entity.entity_id in registry.entities:
-            registry.async_remove(entity.entity_id)
+        for unique_id in self.entity_unique_ids - current_entity_unique_ids:
+            entity = self.entities.pop(unique_id)
+            self.hass.async_create_task(entity.async_remove())
+        self.entity_unique_ids.intersection_update(current_entity_unique_ids)
 
 
 class PfSenseEntity(CoordinatorEntity, RestoreEntity):
@@ -636,83 +784,3 @@ class PfSenseEntity(CoordinatorEntity, RestoreEntity):
 
     def _get_pfsense_client(self) -> pfSenseClient:
         return self.hass.data[DOMAIN][self.config_entry.entry_id][PFSENSE_CLIENT]
-
-    def service_close_notice(self, id: int | str | None = None):
-        client = self._get_pfsense_client()
-        client.close_notice(id)
-
-    def service_file_notice(self, **kwargs):
-        client = self._get_pfsense_client()
-        client.file_notice(**kwargs)
-
-    def service_start_service(
-        self, service_name: str, service: dict | str | None = None
-    ):
-        client = self._get_pfsense_client()
-        client.start_service(service_name, service)
-
-    def service_stop_service(
-        self, service_name: str, service: dict | str | None = None
-    ):
-        client = self._get_pfsense_client()
-        client.stop_service(service_name, service)
-
-    def service_restart_service(
-        self,
-        service_name: str,
-        only_if_running: int | str | None | bool = False,
-        service: dict | str | None = None,
-    ):
-        client = self._get_pfsense_client()
-
-        if isinstance(only_if_running, str):
-            if len(only_if_running) > 0:
-                if only_if_running.lower() == "true" or only_if_running == "1":
-                    only_if_running = True
-                else:
-                    only_if_running = False
-            else:
-                only_if_running = False
-
-        if isinstance(only_if_running, int):
-            if only_if_running > 0:
-                only_if_running = True
-            else:
-                only_if_running = False
-
-        if only_if_running:
-            client.restart_service_if_running(service_name, service)
-        else:
-            client.restart_service(service_name, service)
-
-    def service_reset_state_table(self):
-        client = self._get_pfsense_client()
-        client.reset_state_table()
-
-    def service_kill_states(self, source: str, destination: str = None):
-        client = self._get_pfsense_client()
-        client.kill_states(source, destination)
-
-    def service_system_halt(self):
-        client = self._get_pfsense_client()
-        client.system_halt()
-
-    def service_system_reboot(self):
-        client = self._get_pfsense_client()
-        client.system_reboot()
-
-    def service_send_wol(self, interface: str, mac: str):
-        client = self._get_pfsense_client()
-        client.send_wol(interface, mac)
-
-    def service_set_default_gateway(self, gateway: str, ip_version: str):
-        client = self._get_pfsense_client()
-        client.set_default_gateway(gateway, ip_version)
-
-    def service_exec_php(self, script: str):
-        client = self._get_pfsense_client()
-        client._exec_php(script)
-
-    def service_exec_command(self, command: str, background: bool = False):
-        client = self._get_pfsense_client()
-        client._exec_command(command, background)

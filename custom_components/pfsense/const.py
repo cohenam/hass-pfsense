@@ -10,22 +10,27 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
-    PERCENTAGE,
     UnitOfFrequency,
     UnitOfInformation,
     UnitOfTemperature,
     UnitOfTime,
 )
 
+try:
+    from homeassistant.const import UnitOfRatio
+except ImportError:
+    UNIT_PERCENTAGE = "%"
+else:
+    UNIT_PERCENTAGE = UnitOfRatio.PERCENTAGE
+
 DEFAULT_USERNAME = "admin"
 DOMAIN = "pfsense"
-
-UNDO_UPDATE_LISTENER = "undo_update_listener"
 
 PLATFORMS = ["sensor", "switch", "device_tracker", "binary_sensor", "update"]
 LOADED_PLATFORMS = "loaded_platforms"
 
 PFSENSE_CLIENT = "pfsense_client"
+PFSENSE_DATA = "pfsense_data"
 COORDINATOR = "coordinator"
 DEVICE_TRACKER_COORDINATOR = "device_tracker_coordinator"
 SHOULD_RELOAD = "should_reload"
@@ -34,6 +39,8 @@ DEFAULT_SCAN_INTERVAL = 30
 CONF_TLS_INSECURE = "tls_insecure"
 DEFAULT_TLS_INSECURE = False
 DEFAULT_VERIFY_SSL = True
+CONF_ALLOW_UNSAFE_SERVICES = "allow_unsafe_services"
+DEFAULT_ALLOW_UNSAFE_SERVICES = False
 
 CONF_DEVICE_TRACKER_ENABLED = "device_tracker_enabled"
 DEFAULT_DEVICE_TRACKER_ENABLED = False
@@ -78,7 +85,7 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
     "telemetry.pfstate.used_percent": SensorEntityDescription(
         key="telemetry.pfstate.used_percent",
         name="pf State Table Used Percentage",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UNIT_PERCENTAGE,
         icon="mdi:table-network",
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -102,7 +109,7 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
     "telemetry.mbuf.used_percent": SensorEntityDescription(
         key="telemetry.mbuf.used_percent",
         name="Memory Buffers Used Percentage",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UNIT_PERCENTAGE,
         icon=ICON_MEMORY,
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -150,7 +157,7 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
     "telemetry.memory.swap_used_percent": SensorEntityDescription(
         key="telemetry.memory.swap_used_percent",
         name="Memory Swap Used Percentage",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UNIT_PERCENTAGE,
         icon=ICON_MEMORY,
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -158,7 +165,7 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
     "telemetry.memory.used_percent": SensorEntityDescription(
         key="telemetry.memory.used_percent",
         name="Memory Used Percentage",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UNIT_PERCENTAGE,
         icon=ICON_MEMORY,
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -167,7 +174,7 @@ SENSOR_TYPES: Final[dict[str, SensorEntityDescription]] = {
     "telemetry.cpu.used_percent": SensorEntityDescription(
         key="telemetry.cpu.used_percent",
         name="CPU Usage",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UNIT_PERCENTAGE,
         icon="mdi:speedometer-medium",
         state_class=SensorStateClass.MEASUREMENT,
         # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,

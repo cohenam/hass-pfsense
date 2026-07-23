@@ -1,3 +1,17 @@
+# v0.7.0
+
+Unreleased
+
+- require Home Assistant 2025.12 or newer
+- update Home Assistant APIs, metadata, translations, and dependencies
+- require administrators for services and dispatch once per firewall
+- keep arbitrary command and PHP services disabled unless explicitly enabled
+- remove credentials from XML-RPC URLs and safely encode PHP inputs
+- serialize rule mutations, polling, and firmware checks
+- fix traffic counter resets, tracker side effects, and lifecycle cleanup
+- support current and legacy pfSense memory-buffer APIs
+- improve config and options flow error handling
+
 # v0.6.7
 
 Released 2025-12-17

@@ -15,7 +15,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import slugify
 
 from . import CoordinatorEntityManager, PfSenseEntity, dict_get
-from .const import COORDINATOR, DOMAIN
+from .const import COORDINATOR, DOMAIN, PFSENSE_DATA
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -227,6 +227,12 @@ class PfSenseSwitch(PfSenseEntity, SwitchEntity):
     def extra_state_attributes(self):
         return None
 
+    async def _async_refresh_after_mutation(self):
+        self.hass.data[DOMAIN][self.config_entry.entry_id][
+            PFSENSE_DATA
+        ].invalidate_slow_state()
+        await self.coordinator.async_refresh()
+
 
 class PfSenseFilterSwitch(PfSenseSwitch):
     def _pfsense_get_tracker(self):
@@ -272,7 +278,7 @@ class PfSenseFilterSwitch(PfSenseSwitch):
         await self.hass.async_add_executor_job(
             client.enable_filter_rule_by_tracker, tracker
         )
-        await self.coordinator.async_refresh()
+        await self._async_refresh_after_mutation()
 
     async def async_turn_off(self, **kwargs):
         """Turn the entity off."""
@@ -284,7 +290,7 @@ class PfSenseFilterSwitch(PfSenseSwitch):
         await self.hass.async_add_executor_job(
             client.disable_filter_rule_by_tracker, tracker
         )
-        await self.coordinator.async_refresh()
+        await self._async_refresh_after_mutation()
 
 
 class PfSenseNatSwitch(PfSenseSwitch):
@@ -343,7 +349,7 @@ class PfSenseNatSwitch(PfSenseSwitch):
             method = client.enable_nat_outbound_rule_by_created_time
 
         await self.hass.async_add_executor_job(method, tracker)
-        await self.coordinator.async_refresh()
+        await self._async_refresh_after_mutation()
 
     async def async_turn_off(self, **kwargs):
         """Turn the entity off."""
@@ -359,7 +365,7 @@ class PfSenseNatSwitch(PfSenseSwitch):
             method = client.disable_nat_outbound_rule_by_created_time
 
         await self.hass.async_add_executor_job(method, tracker)
-        await self.coordinator.async_refresh()
+        await self._async_refresh_after_mutation()
 
 
 class PfSenseServiceSwitch(PfSenseSwitch):
@@ -410,7 +416,7 @@ class PfSenseServiceSwitch(PfSenseSwitch):
         await self.hass.async_add_executor_job(
             client.start_service, service["name"], service
         )
-        await self.coordinator.async_refresh()
+        await self._async_refresh_after_mutation()
 
     async def async_turn_off(self, **kwargs):
         """Turn the entity off."""
@@ -419,4 +425,4 @@ class PfSenseServiceSwitch(PfSenseSwitch):
         await self.hass.async_add_executor_job(
             client.stop_service, service["name"], service
         )
-        await self.coordinator.async_refresh()
+        await self._async_refresh_after_mutation()
