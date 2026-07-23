@@ -1,84 +1,58 @@
 close_notice:
-  # Service name as shown in UI
   name: Close notice
-  # Description of the service
-  description: Closes a notice(s).
-  # If the service accepts entity IDs, target allows the user to specify entities by entity, device, or area. If `target` is specified, `entity_id` should not be defined in the `fields` map. By default it shows only targets matching entities from the same domain as the service, but if further customization is required, target supports the entity, device, and area selectors (https://www.home-assistant.io/docs/blueprint/selectors/). Entity selector parameters will automatically be applied to device and area, and device selector parameters will automatically be applied to area. 
-  #target:
-  # Different fields that your service accepts
+  description: Closes one or more notices.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
-
-    # Key of the field
     id:
-      # Field name as shown in UI
       name: Notice ID
-      # Description of the field
-      description: The notice ID
-      # Whether or not field is required (default = false)
+      description: The notice ID, or "all" to close every notice.
       required: false
-      # Advanced fields are only shown when the advanced mode is enabled for the user (default = false)
-      advanced: false
-      # Example value that can be passed for this field
       example: "all"
-      # The default field value
       default: "all"
 
 file_notice:
   name: File notice
-  description: Files a notice(s).
+  description: Files a notice.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
-
     id:
       name: Notice ID
-      description: The notice ID
+      description: The notice ID.
       required: true
-      advanced: false
-      example: "all"
-      default: "all"
-
+      example: "home_assistant"
     notice:
       name: Notice message
-      description: The notice message
+      description: The notice message.
       required: true
-      advanced: false
-      example: "hello world from hass"
-      default: ""
-
+      example: "Hello from Home Assistant"
     category:
       name: Notice category
-      description: The category of the notice
+      description: The notice category.
       required: false
       advanced: true
       example: "General"
       default: "HASS"
-
     url:
-      name: Notice url
-      description: The url of the notice
+      name: Notice URL
+      description: The URL associated with the notice.
       required: false
       advanced: true
       example: "https://example.com"
       default: ""
-
     priority:
       name: Notice priority
-      description: The priority of the notice
+      description: The notice priority.
       required: false
       advanced: true
       example: 1
       default: 1
-
     local_only:
       name: Only show in the UI
-      description: Do not send the notice via email, etc
+      description: Do not send the notice through external notification channels.
       required: false
       advanced: true
       example: false
@@ -86,22 +60,19 @@ file_notice:
 
 start_service:
   name: Start service
-  description: Starts a service.
+  description: Starts a pfSense service.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
     service_name:
-      name: Service Name
-      description: The name of the service.
+      name: Service name
+      description: The pfSense service name.
       required: true
-      advanced: false
-      example: "haproxy|dhcp|dpinger|.."
-      default: ""
+      example: "haproxy"
     service:
-      name: Service Data
-      description: The json-encoded data of the service.
+      name: Service data
+      description: JSON-encoded service data.
       required: false
       advanced: true
       example: '{"vpnid": 1, "mode": "server"}'
@@ -109,22 +80,19 @@ start_service:
 
 stop_service:
   name: Stop service
-  description: Stops a service.
+  description: Stops a pfSense service.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
     service_name:
-      name: Service Name
-      description: The name of the service.
+      name: Service name
+      description: The pfSense service name.
       required: true
-      advanced: false
-      example: "haproxy|dhcp|dpinger|.."
-      default: ""
+      example: "haproxy"
     service:
-      name: Service Data
-      description: The json-encoded data of the service.
+      name: Service data
+      description: JSON-encoded service data.
       required: false
       advanced: true
       example: '{"vpnid": 1, "mode": "server"}'
@@ -132,29 +100,26 @@ stop_service:
 
 restart_service:
   name: Restart service
-  description: Restarts a service.
+  description: Restarts a pfSense service.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
     service_name:
-      name: Service Name
-      description: The name of the service.
+      name: Service name
+      description: The pfSense service name.
       required: true
-      advanced: false
-      example: "haproxy|dhcp|dpinger|.."
-      default: ""
+      example: "haproxy"
     only_if_running:
-      name: Only If Running
-      description: Only restart if the service is currently running.
+      name: Only if running
+      description: Only restart the service when it is currently running.
       required: false
       advanced: true
-      example: "true|false|1|0"
+      example: false
       default: false
     service:
-      name: Service Data
-      description: The json-encoded data of the service.
+      name: Service data
+      description: JSON-encoded service data.
       required: false
       advanced: true
       example: '{"vpnid": 1, "mode": "server"}'
@@ -162,137 +127,113 @@ restart_service:
 
 reset_state_table:
   name: Reset state table
-  description: Force all existing connections to close and reestablish 
-  fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
+  description: Forces all existing connections to close and reestablish.
+  target:
+    entity:
+      integration: pfsense
 
 kill_states:
   name: Kill states
-  description: Remove all state table entries for source, or from source to destination
+  description: Removes state table entries for a source or source/destination pair.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
-
     source:
       name: Source
-      description: Host or network
+      description: An IPv4 or IPv6 host or network.
       required: true
-      advanced: false
       example: "0.0.0.0/0"
-      default: ""
-      
-    destination: 
+    destination:
       name: Destination
-      description: Host or network (optional)
+      description: An optional IPv4 or IPv6 host or network.
       required: false
-      advanced: false
       example: "192.168.0.1/24"
-      default: ""
 
 system_halt:
   name: Halt system
-  description: Halts the system.
-  fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
+  description: Halts the pfSense system.
+  target:
+    entity:
+      integration: pfsense
 
 system_reboot:
   name: Reboot system
-  description: Reboots the system.
-  fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
+  description: Reboots the pfSense system.
+  target:
+    entity:
+      integration: pfsense
 
 send_wol:
   name: Send WOL
-  description: Sends wake-on-lan magic packet.
+  description: Sends a wake-on-LAN magic packet.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
-
     interface:
-      name: Interface Name
-      description: The name of the interface.
+      name: Interface name
+      description: The pfSense interface name.
       required: true
-      advanced: false
-      example: "wan|lan|opt1|opt2|..."
-      default: ""
-
+      example: "lan"
     mac:
-      name: MAC Address
-      description: The target mac address.
+      name: MAC address
+      description: The target MAC address.
       required: true
-      advanced: false
-      example: ""
-      default: ""
+      example: "00:11:22:33:44:55"
 
 set_default_gateway:
-  name: Set Default Gateway
-  description: Set the default gateway for ipv4 and ipv6.
+  name: Set default gateway
+  description: Sets the default IPv4 or IPv6 gateway.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
-
     gateway:
-      name: Gateway Name
-      description: The name of the gateway.
+      name: Gateway name
+      description: The gateway name. Use "-" for none or an empty value for automatic.
       required: true
-      advanced: false
-      example: "GW_WAN, '-' is None and '' is Automatice"
-      default: ""
-
+      example: "GW_WAN"
     ip_version:
-      name: IP Version
+      name: IP version
       description: The IP version to update.
       required: true
-      advanced: false
-      example: "4|6"
+      example: "4"
       default: "4"
 
 exec_php:
-  name: Exec PHP Script
-  description: Execute a fully php script.
+  name: Execute PHP script
+  description: >-
+    Executes arbitrary PHP as root. Requires an administrator and the
+    allow_unsafe_services config-entry option.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
-
     script:
-      name: Gateway Name
-      description: The name of the gateway.
+      name: PHP script
+      description: The PHP source to execute.
       required: true
-      advanced: false
-      example: "GW_WAN, '-' is None and '' is Automatice"
-      default: ""
+      example: '$toreturn = ["data" => true];'
 
 exec_command:
-  name: Exec Command
-  description: Execute a command.
+  name: Execute command
+  description: >-
+    Executes an arbitrary command as root. Requires an administrator and the
+    allow_unsafe_services config-entry option.
+  target:
+    entity:
+      integration: pfsense
   fields:
-    entity_id:
-      name: Entity ID
-      description: pfSense entity id
-      example: "binary_sensor.pfsense_localdomain_pending_notices_present"
-
     command:
       name: Command
-      description: The command to run.
+      description: The shell command to execute.
       required: true
-      advanced: false
-      example: "ping -c 1 yahoo.com"
-      default: ""
-
+      example: "ping -c 1 example.com"
+    background:
+      name: Run in background
+      description: Starts the command without waiting for it to finish.
+      required: false
+      advanced: true
+      example: false
+      default: false

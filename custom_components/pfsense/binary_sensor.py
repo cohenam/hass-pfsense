@@ -51,7 +51,7 @@ async def async_setup_entry(
             config_entry,
             coordinator,
             BinarySensorEntityDescription(
-                key=f"notices.pending_notices_present",
+                key="notices.pending_notices_present",
                 name="Pending Notices Present",
                 # native_unit_of_measurement=native_unit_of_measurement,
                 icon="mdi:alert",

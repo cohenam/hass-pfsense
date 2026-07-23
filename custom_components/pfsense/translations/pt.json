@@ -37,7 +37,11 @@
           "scan_interval": "Intervalo de pesquisa (segundos)",
           "device_tracker_enabled": "Habilitar a pesquisa de dispositivos",
           "device_tracker_scan_interval": "Intervalo de pesquisa de dispositivos (segundos)",
-          "device_tracker_consider_home": "Considerar a pesquisa inicial de dispositivos (segundos)"
+          "device_tracker_consider_home": "Considerar a pesquisa inicial de dispositivos (segundos)",
+          "allow_unsafe_services": "Permitir serviços inseguros"
+        },
+        "data_description": {
+          "allow_unsafe_services": "Permite serviços de execução arbitrária de comandos e PHP. Ative apenas quando utilizadores fidedignos do Home Assistant necessitarem deles."
         },
         "description": "Configurar Opções."
       },

@@ -37,7 +37,11 @@
           "scan_interval": "Intervalo de escaneamento (segundos)",
           "device_tracker_enabled": "Habilitar Rastreador de dispositivos",
           "device_tracker_scan_interval": "Intervalo de escaneamento do Rastreador de dispositivos (segundos)",
-          "device_tracker_consider_home": "Considerar inicial do Rastreador de dispositivos (segundos)"
+          "device_tracker_consider_home": "Considerar inicial do Rastreador de dispositivos (segundos)",
+          "allow_unsafe_services": "Permitir serviços inseguros"
+        },
+        "data_description": {
+          "allow_unsafe_services": "Permite serviços de execução arbitrária de comandos e PHP. Ative somente quando usuários confiáveis do Home Assistant precisarem deles."
         },
         "description": "Configurar Opções."
       },

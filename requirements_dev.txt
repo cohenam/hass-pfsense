@@ -1,5 +1,8 @@
-black
-homeassistant
-isort
-mac_vendor_lookup
-async-timeout
+black==26.5.1
+homeassistant==2025.12.0
+isort==8.0.1
+mac-vendor-lookup==0.1.15
+pytest==9.0.0
+pytest-asyncio==1.3.0
+pycares==4.11.0
+ruff==0.15.22

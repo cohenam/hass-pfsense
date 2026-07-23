@@ -1,32 +1,32 @@
 """pfSense integration."""
 
-import logging
-import time
-from typing import Any
+import asyncio
 
 from homeassistant.components.update import (
     UpdateDeviceClass,
     UpdateEntity,
     UpdateEntityDescription,
+    UpdateEntityFeature,
 )
-from homeassistant.components.update.const import UpdateEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import entity_platform
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import slugify
 
 from . import CoordinatorEntityManager, PfSenseEntity, dict_get
 from .const import COORDINATOR, DOMAIN
 
-_LOGGER = logging.getLogger(__name__)
+FIRMWARE_INSTALL_POLL_INTERVAL = 10
+FIRMWARE_INSTALL_TIMEOUT = 60 * 60
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    async_add_entities: entity_platform.AddEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ):
     """Set up the pfSense update entities."""
 
@@ -39,7 +39,7 @@ async def async_setup_entry(
             config_entry,
             coordinator,
             UpdateEntityDescription(
-                key=f"firmware.update_available",
+                key="firmware.update_available",
                 name="Firmware Updates Available",
                 entity_category=EntityCategory.DIAGNOSTIC,
             ),
@@ -76,14 +76,9 @@ class PfSenseUpdate(PfSenseEntity, UpdateEntity):
         self._attr_unique_id = slugify(
             f"{self.pfsense_device_unique_id}_{entity_description.key}"
         )
+        self._install_in_progress = False
 
-        self._attr_supported_features |= (
-            UpdateEntityFeature.INSTALL
-            # | UpdateEntityFeature.BACKUP
-            # | UpdateEntityFeature.PROGRESS
-            # | UpdateEntityFeature.RELEASE_NOTES
-            # | UpdateEntityFeature.SPECIFIC_VERSION
-        )
+        self._attr_supported_features |= UpdateEntityFeature.INSTALL
 
     @property
     def device_class(self):
@@ -93,12 +88,8 @@ class PfSenseUpdate(PfSenseEntity, UpdateEntity):
 class PfSenseFirmwareUpdatesAvailableUpdate(PfSenseUpdate):
     @property
     def available(self):
-        state = self.coordinator.data
-        if (
-            state["firmware_update_info"] is None
-            or dict_get(state, "firmware_update_info.base") is False
-            or dict_get(state, "firmware_update_info.base") is None
-        ):
+        info = dict_get(self.coordinator.data, "firmware_update_info.base")
+        if not isinstance(info, dict):
             return False
 
         return super().available
@@ -132,7 +123,7 @@ class PfSenseFirmwareUpdatesAvailableUpdate(PfSenseUpdate):
     @property
     def in_progress(self):
         """Update installation in progress."""
-        return False
+        return self._install_in_progress
 
     @property
     def extra_state_attributes(self):
@@ -140,7 +131,7 @@ class PfSenseFirmwareUpdatesAvailableUpdate(PfSenseUpdate):
         attrs = {}
         info = dict_get(state, "firmware_update_info.base", {})
 
-        if info == False:
+        if not isinstance(info, dict):
             return attrs
 
         for key in info.keys():
@@ -154,13 +145,34 @@ class PfSenseFirmwareUpdatesAvailableUpdate(PfSenseUpdate):
     def release_url(self):
         return "https://docs.netgate.com/pfsense/en/latest/releases/index.html"
 
-    def install(self, version=None, backup=False):
+    async def async_install(self, version=None, backup=False, **kwargs):
         """Install an update."""
-        client = self._get_pfsense_client()
-        pid = client.upgrade_firmware()
+        if self._install_in_progress:
+            raise HomeAssistantError("A pfSense firmware update is already in progress")
 
-        sleep_time = 10
-        running = True
-        while running:
-            time.sleep(sleep_time)
-            running = client.pid_is_running(pid)
+        self._install_in_progress = True
+        self.async_write_ha_state()
+        client = self._get_pfsense_client()
+        try:
+            pid = await self.hass.async_add_executor_job(client.upgrade_firmware)
+            if not pid:
+                raise HomeAssistantError("pfSense did not start the firmware update")
+
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + FIRMWARE_INSTALL_TIMEOUT
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise HomeAssistantError(
+                        "Timed out waiting for the pfSense firmware update"
+                    )
+
+                await asyncio.sleep(min(FIRMWARE_INSTALL_POLL_INTERVAL, remaining))
+                if not await self.hass.async_add_executor_job(
+                    client.pid_is_running,
+                    pid,
+                ):
+                    break
+        finally:
+            self._install_in_progress = False
+            self.async_write_ha_state()

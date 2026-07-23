@@ -11,7 +11,6 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (  # ENTITY_CATEGORY_DIAGNOSTIC,
-    PERCENTAGE,
     STATE_UNKNOWN,
     UnitOfDataRate,
     UnitOfInformation,
@@ -32,6 +31,7 @@ from .const import (
     DATA_RATE_PACKETS_PER_SECOND,
     DOMAIN,
     SENSOR_TYPES,
+    UNIT_PERCENTAGE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ async def async_setup_entry(
                 SensorEntityDescription(
                     key=f"telemetry.filesystems.{device_clean}",
                     name="Filesystem Used Percentage {}".format(mountpoint_clean),
-                    native_unit_of_measurement=PERCENTAGE,
+                    native_unit_of_measurement=UNIT_PERCENTAGE,
                     icon="mdi:harddisk",
                     state_class=SensorStateClass.MEASUREMENT,
                     # entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -241,7 +241,7 @@ async def async_setup_entry(
                 # entity_category = ENTITY_CATEGORY_DIAGNOSTIC
 
                 if property == "loss":
-                    native_unit_of_measurement = PERCENTAGE
+                    native_unit_of_measurement = UNIT_PERCENTAGE
 
                 if property in ["delay", "stddev"]:
                     native_unit_of_measurement = UnitOfTime.MILLISECONDS

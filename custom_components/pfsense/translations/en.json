@@ -37,7 +37,11 @@
           "scan_interval": "Scan Interval (seconds)",
           "device_tracker_enabled": "Enable Device Tracker",
           "device_tracker_scan_interval": "Device Tracker Scan Interval (seconds)",
-          "device_tracker_consider_home": "Device Tracker Consider Home (seconds)"
+          "device_tracker_consider_home": "Device Tracker Consider Home (seconds)",
+          "allow_unsafe_services": "Allow unsafe services"
+        },
+        "data_description": {
+          "allow_unsafe_services": "Allow arbitrary command and PHP execution services. Enable only when trusted Home Assistant users need them."
         },
         "description": "Configure Options."
       },

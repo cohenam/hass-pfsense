@@ -11,8 +11,8 @@ pfSense is a free and open source firewall and router that also features unified
 interactions. No special plugins or software needs to be installed to use the
 integration.
 
-Initial development was done against `pfSense` `2.5.2` and `home-assistant`
-`2021.10`.
+Version 0.7.0 requires Home Assistant 2025.12 or newer. The current pfSense
+compatibility targets are pfSense CE 2.8.x and pfSense Plus 26.03.x.
 
 # installation
 
@@ -22,9 +22,8 @@ the browser.
 
 # configuration
 
-Configuration is managed entirely from the UI using `config_flow` semantics.
-Simply go to `Configuration -> Integrations -> Add Integration` and search for
-`pfSense` in the search box.
+Configuration is managed entirely from the UI. Go to
+`Settings -> Devices & services -> Add Integration` and search for `pfSense`.
 
 ## pfSense
 
@@ -37,8 +36,9 @@ Simply go to `Configuration -> Integrations -> Add Integration` and search for
 
 - `URL` - put the full URL to your `pfSense` UI (ie: `https://192.168.1.1`),
   supported format is `<scheme>://<ip or host>[:<port>]`
-- `Verify SSL Certificate` - if the SSL certificate should be verified or not
-  (if you get an SSL error try unchecking this)
+- `Verify SSL Certificate` - verify the pfSense certificate (default: `true`).
+  Disable this only on a trusted network when certificate verification cannot
+  be configured.
 - `username` - the username to use for authentication (ie: `admin`)
 - `password` - the password to use for authentication
 - `Firewall Name` - a custom name to be used for `entity` naming (default: use
@@ -51,13 +51,16 @@ Simply go to `Configuration -> Integrations -> Add Integration` and search for
 - `Enable Device Tracker` - turn on the device tracker integration using
   `pfSense` arp table (default: `false`)
 - `Device Tracker Scan Interval (seconds)` - scan interval to use for arp
-  updates (default: `60`)
+  updates (default: `150`)
 - `Device Tracker Consider Home (seconds)` - seconds to wait until marking
   a device as not home after not being seen.
   (default: `0`)
   - `0` - disabled (if device is not present during any given scan interval it
     is considered away)
   - `> 0` - generally should be a multiple of the configured scan interval
+- `Allow unsafe services` - enables arbitrary command and PHP execution
+  services (default: `false`). Leave this disabled unless trusted Home Assistant
+  administrators explicitly need those services.
 
 # entities
 
@@ -113,6 +116,14 @@ All of the switches below are disabled by default.
 - services - start/stop services (note that services must be enabled before they can be started)
 
 # services
+
+All pfSense services require a Home Assistant administrator because they change
+firewall or router state.
+
+The `exec_command` and `exec_php` services can execute arbitrary code on the
+firewall. They are unavailable unless `Allow unsafe services` is enabled in the
+integration options. Enabling them effectively gives trusted Home Assistant
+administrators full control of pfSense.
 
 ```
 service: pfsense.close_notice
