@@ -5,14 +5,16 @@ likely via some sort of mutex.
 
 import json
 import logging
-import socket
 import ssl
 from urllib.parse import quote_plus, urlparse
 from xml.parsers.expat import ExpatError
 import xmlrpc.client
 
-# value to set as the socket timeout
+# per-connection socket timeout (seconds) for normal API calls
 DEFAULT_TIMEOUT = 10
+# generous timeout for the firmware update check: when pfSense's 2h
+# pkg-version cache is stale it contacts upstream pkg servers (~60s worst case)
+FIRMWARE_TIMEOUT = 90
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +50,35 @@ def normalize_service_data(service):
     return service
 
 
+# Timeouts are set per-connection (not via socket.setdefaulttimeout, which is
+# process-global and races between concurrent calls). The timeout is applied on
+# every make_connection return so the stdlib's connection cache is covered too.
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """HTTP transport with a per-connection timeout."""
+
+    def __init__(self, timeout=DEFAULT_TIMEOUT):
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host):
+        connection = super().make_connection(host)
+        connection.timeout = self._timeout
+        return connection
+
+
+class _TimeoutSafeTransport(xmlrpc.client.SafeTransport):
+    """HTTPS transport with a per-connection timeout."""
+
+    def __init__(self, timeout=DEFAULT_TIMEOUT, context=None):
+        super().__init__(context=context)
+        self._timeout = timeout
+
+    def make_connection(self, host):
+        connection = super().make_connection(host)
+        connection.timeout = self._timeout
+        return connection
+
+
 class Client(object):
     """pfSense Client"""
 
@@ -70,7 +101,7 @@ class Client(object):
         self._url_parts = urlparse(self._url)
 
     # https://stackoverflow.com/questions/64983392/python-multiple-patch-gives-http-client-cannotsendrequest-request-sent
-    def _get_proxy(self):
+    def _get_proxy(self, timeout=DEFAULT_TIMEOUT):
         # https://docs.python.org/3/library/xmlrpc.client.html#module-xmlrpc.client
         # https://stackoverflow.com/questions/30461969/disable-default-certificate-verification-in-python-2-7-9
         context = None
@@ -84,22 +115,15 @@ class Client(object):
         # set to True if necessary during development
         verbose = False
 
-        proxy = xmlrpc.client.ServerProxy(self._url, context=context, verbose=verbose)
+        # with transport= supplied, ServerProxy ignores its own context kwarg —
+        # the context must be threaded through the SafeTransport
+        if self._url_parts.scheme == "https":
+            transport = _TimeoutSafeTransport(timeout=timeout, context=context)
+        else:
+            transport = _TimeoutTransport(timeout=timeout)
+
+        proxy = xmlrpc.client.ServerProxy(self._url, transport=transport, verbose=verbose)
         return proxy
-
-    def _apply_timeout(func):
-        def inner(*args, **kwargs):
-            response = None
-            # timout applies to each recv() call, not the whole request
-            default_timeout = socket.getdefaulttimeout()
-            try:
-                socket.setdefaulttimeout(DEFAULT_TIMEOUT)
-                response = func(*args, **kwargs)
-            finally:
-                socket.setdefaulttimeout(default_timeout)
-            return response
-
-        return inner
 
     def _log_errors(func):
         def inner(*args, **kwargs):
@@ -111,19 +135,16 @@ class Client(object):
 
         return inner
 
-    @_apply_timeout
     def _get_config_section(self, section):
         response = self._get_proxy().pfsense.backup_config_section([section])
         return response[section]
 
-    @_apply_timeout
     def _restore_config_section(self, section_name, data):
         params = {section_name: data}
         response = self._get_proxy().pfsense.restore_config_section(params, 60)
         return response
 
-    @_apply_timeout
-    def _exec_php(self, script):
+    def _exec_php(self, script, timeout=DEFAULT_TIMEOUT):
         script = """
 ini_set('display_errors', 0);
 
@@ -137,25 +158,7 @@ $toreturn["real"] = json_encode($toreturn_real);
 """.format(
             script
         )
-        response = self._get_proxy().pfsense.exec_php(script)
-        response = json.loads(response["real"])
-        return response
-
-    def _exec_php_no_timeout(self, script):
-        script = """
-ini_set('display_errors', 0);
-
-{}
-
-// wrapping this in json_encode and then unwrapping in python prevents funny XMLRPC NULL encoding errors
-// https://github.com/travisghansen/hass-pfsense/issues/35
-$toreturn_real = $toreturn;
-$toreturn = [];
-$toreturn["real"] = json_encode($toreturn_real);
-""".format(
-            script
-        )
-        response = self._get_proxy().pfsense.exec_php(script)
+        response = self._get_proxy(timeout=timeout).pfsense.exec_php(script)
         response = json.loads(response["real"])
         return response
 
@@ -178,12 +181,10 @@ $toreturn = [
         response = self._exec_php(script)
         return response["data"]
 
-    @_apply_timeout
     @_log_errors
     def get_host_firmware_version(self):
         return self._get_proxy().pfsense.host_firmware_version(1, 60)
 
-    @_log_errors
     def get_firmware_update_info(self):
         """
         # the cache is 2 hours
@@ -209,7 +210,15 @@ $toreturn = [
     ]
 ];
 """
-        response = self._exec_php(script)
+        try:
+            response = self._exec_php(script, timeout=FIRMWARE_TIMEOUT)
+        except TimeoutError:
+            # tolerated: pfSense contacts upstream pkg servers when its 2h
+            # cache is stale; the coordinator logs this at DEBUG and retries
+            raise
+        except BaseException as err:
+            _LOGGER.error(f"Unexpected get_firmware_update_info error {err=}, {type(err)=}")
+            raise
         return response["data"]
 
     @_log_errors

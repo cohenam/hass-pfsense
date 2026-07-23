@@ -245,9 +245,11 @@ class PfSenseData:
             self._firmware_update_info = self._client.get_firmware_update_info()
 
         except BaseException as err:
-            # can take some time to refresh data
-            # will catch it the next cycle likely
-            if "timed out" in str(err):
+            # pfSense refreshes its pkg-version cache (~2h TTL) by contacting
+            # upstream servers; tolerate a slow check and retry next cycle.
+            # String match kept as a safety net for ssl-wrapped timeout variants.
+            if isinstance(err, TimeoutError) or "timed out" in str(err):
+                _LOGGER.debug("firmware update check timed out, will retry next cycle: %s", err)
                 return
             raise err
 
