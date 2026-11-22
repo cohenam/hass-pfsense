@@ -8,7 +8,6 @@ from homeassistant.components.switch import (
     SwitchEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_UNKNOWN  # ENTITY_CATEGORY_CONFIG,
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -262,11 +261,11 @@ class PfSenseFilterSwitch(PfSenseSwitch):
     def is_on(self):
         rule = self._pfsense_get_rule()
         if rule is None:
-            return STATE_UNKNOWN
+            return None
         try:
             return "disabled" not in rule.keys()
         except KeyError:
-            return STATE_UNKNOWN
+            return None
 
     async def async_turn_on(self, **kwargs):
         """Turn the entity on."""
@@ -329,11 +328,11 @@ class PfSenseNatSwitch(PfSenseSwitch):
     def is_on(self):
         rule = self._pfsense_get_rule()
         if rule is None:
-            return STATE_UNKNOWN
+            return None
         try:
             return "disabled" not in rule.keys()
         except KeyError:
-            return STATE_UNKNOWN
+            return None
 
     async def async_turn_on(self, **kwargs):
         """Turn the entity on."""
@@ -407,7 +406,7 @@ class PfSenseServiceSwitch(PfSenseSwitch):
             value = service[property]
             return value
         except KeyError:
-            return STATE_UNKNOWN
+            return None
 
     async def async_turn_on(self, **kwargs):
         """Turn the entity on."""
