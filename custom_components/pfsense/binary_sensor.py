@@ -8,7 +8,6 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -112,7 +111,7 @@ class PfSenseCarpStatusBinarySensor(PfSenseBinarySensor):
         try:
             return state["carp_status"]
         except KeyError:
-            return STATE_UNKNOWN
+            return None
 
 
 class PfSensePendingNoticesPresentBinarySensor(PfSenseBinarySensor):
@@ -122,7 +121,7 @@ class PfSensePendingNoticesPresentBinarySensor(PfSenseBinarySensor):
         try:
             return state["notices"]["pending_notices_present"]
         except KeyError:
-            return STATE_UNKNOWN
+            return None
 
     @property
     def device_class(self):

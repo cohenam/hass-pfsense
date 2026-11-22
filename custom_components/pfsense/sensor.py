@@ -11,7 +11,6 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (  # ENTITY_CATEGORY_DIAGNOSTIC,
-    STATE_UNKNOWN,
     UnitOfDataRate,
     UnitOfInformation,
     UnitOfTime,
@@ -387,13 +386,10 @@ class PfSenseStaticKeySensor(PfSenseSensor):
         """Return entity state from firewall."""
         value = self._get_pfsense_state_value(self.entity_description.key)
         if value is None:
-            if self.entity_description.key == "telemetry.system.boottime":
-                return value
-
-            return STATE_UNKNOWN
+            return None
 
         if value == 0 and self.entity_description.key == "telemetry.system.temp":
-            return STATE_UNKNOWN
+            return None
 
         if self.entity_description.key == "telemetry.system.boottime":
             value = utc_from_timestamp(value)
@@ -410,7 +406,7 @@ class PfSenseStaticKeySensor(PfSenseSensor):
             value == 0
             and self.entity_description.key == "telemetry.cpu.frequency.current"
         ):
-            return STATE_UNKNOWN
+            return None
 
         self._previous_value = value
 
@@ -502,7 +498,7 @@ class PfSenseInterfaceSensor(PfSenseSensor):
         try:
             return interface[property]
         except KeyError:
-            return STATE_UNKNOWN
+            return None
 
 
 class PfSenseCarpInterfaceSensor(PfSenseSensor):
@@ -556,7 +552,7 @@ class PfSenseCarpInterfaceSensor(PfSenseSensor):
         try:
             return interface["status"]
         except KeyError:
-            return STATE_UNKNOWN
+            return None
 
 
 class PfSenseGatewaySensor(PfSenseSensor):
@@ -639,7 +635,7 @@ class PfSenseGatewaySensor(PfSenseSensor):
         property = self._pfsense_get_gateway_property_name()
 
         if gateway is None:
-            return STATE_UNKNOWN
+            return None
 
         try:
             value = gateway[property]
@@ -651,11 +647,11 @@ class PfSenseGatewaySensor(PfSenseSensor):
                         value = float(value)
 
             if isinstance(value, str) and len(value) < 1:
-                return STATE_UNKNOWN
+                return None
 
             return value
         except KeyError:
-            return STATE_UNKNOWN
+            return None
 
 
 class PfSenseOpenVPNServerSensor(PfSenseSensor):
@@ -702,9 +698,9 @@ class PfSenseOpenVPNServerSensor(PfSenseSensor):
         property = self._pfsense_get_server_property_name()
 
         if server is None:
-            return STATE_UNKNOWN
+            return None
 
         try:
             return server[property]
         except KeyError:
-            return STATE_UNKNOWN
+            return None
