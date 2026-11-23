@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 from urllib.parse import quote_plus, urlparse
-import xmlrpc
+import xmlrpc.client
 
 from homeassistant import config_entries
 from homeassistant.const import (
